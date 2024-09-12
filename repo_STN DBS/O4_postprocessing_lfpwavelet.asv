@@ -1,0 +1,421 @@
+%[freq processing routine for stn data                                       ]%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% computing directory 
+% cdir 
+% cd(cdir)
+% addpath './Ffx';
+% root 
+% dir 
+% dFld 
+% fdir 
+% in 
+% baselineOut
+% fullfile(root,dir,dFld,in)
+% input 
+% output 
+
+if ~exist(output, 'dir')
+    mkdir(output)
+end
+% baselineOutput 
+if ~exist(baselineOutput, 'dir')
+    mkdir(baselineOutput)
+end
+tic
+% file I/O # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
+%load(fullfile(input,'LFP.mat'));
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% parameters ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` ` `
+% baseline [[-500:-100] ms] trial [response: -300]
+% swtiches
+dosave = 1;
+doplot = 1;
+if doplot==1
+    disp(fdir)
+    if ~exist(fdir, 'dir')
+        mkdir(fdir)
+    end
+end
+tic
+grpavg =1; % for the perm stats
+fullFreq=1;
+theta=1;
+alpha=1;
+beta=1;
+gamma=0;
+% frequency parameters
+fs = 1000;
+min_freq =  1;
+max_freq = 85;
+num_frex = (max_freq - min_freq) + 1;
+frex = linspace(min_freq,max_freq,num_frex);
+%time parameters
+times = -379:380; % baseline + trial
+btimes = -379:-1; % baseline only
+savetime = 1:380;
+basetime = [-379 -1];
+ttime = savetime(1):savetime(end-1);% trial only
+savetimeidx = zeros(size(savetime));
+
+for ti = 1:length(savetimeidx)
+    [~, savetimeidx(ti)] = min(abs(times-savetime(ti)));
+end
+
+[~, basetimeidx(1)] = min(abs(times-basetime(1)));
+[~, basetimeidx(2)] = min(abs(times-basetime(2)));
+
+% FFT & wavelet parameters
+range_cycles = [4 12];
+% Create a vector of wavelet cycle widths:
+wavecycles = logspace(log10(range_cycles(1)), log10(range_cycles(end)), num_frex) ./ (2*pi*frex);
+wavtime = -.1:1/fs:.1;                                                        % Set up wavelet time length
+half_wave = (length(wavtime)-1)/2;                                          % Only use half of the spectrum (and wavelet)
+nWave = length(wavtime);                                                    % Length of the wavelet
+
+% file I/O # - # - # - # - # - # - # - # - # - # - # - # - # - # - # - # -
+%load LFP data
+%input = 'C:\Users\jmcdonnell\Box\Dept-Neurosurgery_NRGlab\Data\DBS\spike_processingSimon\STNoutput\PPd\LFP\STN_02_18'
+% - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+condition = {'dcong'; 'dincg'; 'vcong'; 'vincg';...
+    'LHdcong'; 'LHdincg'; 'LHvcong'; 'LHvincg';...
+    'RHdcong'; 'RHdincg'; 'RHvcong'; 'RHvincg'};
+tic
+for k = 1:4%size(condition,1)
+
+    iCnd = condition{k};
+    datain = strcat(fullfile(input,iCnd));
+    load(datain);
+    if strcmp(iCnd,'dcong')
+        dcong =  rmfield(dcong,'STN10a');
+        dcong =  rmfield(dcong,'STN03');
+        dcong =  rmfield(dcong,'STN17');
+    elseif strcmp(iCnd,'dincg')
+        dincg =  rmfield(dincg,'STN10a');
+        dincg = rmfield(dincg,'STN17');
+    elseif strcmp(iCnd,'vcong')
+        vcong = rmfield(vcong,'STN10a');
+        vcong = rmfield(vcong,'STN17');
+    elseif strcmp(iCnd,'vincg')
+        vincg = rmfield(vincg,'STN10a');
+        vincg = rmfield(vincg,'STN17');
+    end
+
+    fn = fieldnames(eval(iCnd));
+    fni = find(contains(fn,'STN'));
+    fng = find(~contains(fn,'STN'));
+
+    % subject loop
+    for s = 1:size(fni,1)
+
+        lfprsp = 'sigrsp';        
+        lfpcond = char(strcat(iCnd,'.',(fn(fni(s))),'.',lfprsp));
+        lfpfilt = char(strcat(iCnd,'.',(fn(fni(s))),'.','fsig'));
+        cn = fieldnames(eval(lfpcond));
+
+        for c = 1:size(cn,1)
+
+            variable = strcat(lfpcond,'.',cn{c});
+           
+            if k <5
+                %grab all RTs, will need to remove missing baseline, len & amp filted trials
+                frt = char(strcat((iCnd),'.',(fn(fni(s))),'.','RT'));                
+                rT = eval(char(frt));
+
+                if ~isempty(rT{1,1}) && ~isempty(rT{2,2})...
+                        && isempty(rT{1,2}) && isempty(rT{1,2})%~isempty(rT)
+                    rt = [rT{1,1};rT{2,2}];
+                else       
+                end
+            end % fi condition condition less then 5
+            filtsig = eval(variable);
+            % amplitude THEN length filter
+            [sigFltAmp,sigFltLen] = fx_AmpFiltLenFilt(filtsig);
+            
+            % not implementing Length filter, may need for RT 
+            signal.(iCnd)(s,c) = sigFltAmp;
+            sig = signal.(iCnd){s,c};
+
+            % organize data and realign data
+           [adat,bseTrlCat,bData,tData,trlRM] = fx_baseTrialNan_alignment(sig);
+
+                  data = adat;
+            
+                % data parameters analytic sig
+                ndata = size(data,2) * size(data,1);
+                npnts = size(data,2);
+                ntrls = size(data,1);
+                nconv = nWave + ndata - 1;                                      %total length of fft
+%                 %bse & trial
+                nData = size(bData,2) * size(bData,1);
+                nPnts = size(bData,2);
+                nTrls = size(bData,1);
+                nConv = nWave + nData - 1;
+                % catenate data
+                alldata = reshape(data(:,:), 1, []);
+
+                % compute
+                dataX = fft(alldata,nconv);
+
+                % loop through freq of interst (foi)
+                for fi = 1:length(frex)
+                    wavelet  = exp(2*1i*pi*frex(fi).*wavtime) .* exp(-wavtime.^2./(2*wavecycles(fi)^2));
+                    waveletX = fft(wavelet,nconv);
+                    waveletX = waveletX ./ max(waveletX);
+
+                    %bse and trl wave
+                    wavecutX = fft(wavelet,nconv);
+                    wavecutX = wavecutX ./ max(wavecutX);
+
+                    % anlytic full signal
+                    as = ifft(waveletX .* dataX);
+                    as = as(half_wave+1:end-half_wave);
+                    as = reshape(as,ntrls,npnts);
+                    full_analytic_signal(fi, :, :) = as;
+                    full_pow(fi, :, :) = abs(as).^2;
+
+                    % Downsample - collect the analytic signal time points of interest:
+                    bins_analytic_signal(fi, :, :) = as(:,:);
+                    bins_pow( fi, :, :) = abs(as.^2);
+
+                   baseline_analytic_signal(fi, :) = mean(as(:,basetimeidx(1):basetimeidx(2)), 1);
+                   baselinepow(fi, :) = mean(abs(as(:,basetimeidx(1):basetimeidx(2))).^2, 1);
+                    trial_analytic_signal(fi, :) = mean(as(:,savetimeidx(1):savetimeidx(2)), 1);
+                    trialpow(fi, :) = mean(abs(as(:,savetimeidx(1):savetimeidx(2))).^2, 1);
+
+                end
+
+                % Power spectrum, all time points and trials
+                tf_pow_full = abs(full_analytic_signal.^2);
+                % break out power bands
+                if theta ==1
+                    %theta
+                    tfU_pow_all = 10*log10(squeeze(mean(tf_pow_full(4:7,:,:),1)));
+                    tfU_pow_avg = (squeeze(mean(tfU_pow_all,2)));
+                    %trial
+                    tfU_pow_trl = squeeze(mean(tf_pow_full(4:7,:,savetimeidx(1):savetimeidx(end-1)),1));
+                    tfU_pow_tavg = (squeeze(mean(tfU_pow_trl,2)));
+                    
+                    % base
+                    tfU_pow_bse = squeeze(mean(tf_pow_full(4:7,:,basetimeidx(1):basetimeidx(2)),1));
+                    tfU_pow_bavg = (squeeze(mean(tfU_pow_bse,2)));
+                end %theta switch
+                 if alpha==1
+                    %alpha
+                tfA_pow_all = 10*log10(squeeze(mean(tf_pow_full(8:12,:,:),1)));
+                tfA_pow_avg = (squeeze(mean(tfA_pow_all,2)));
+                    %trial
+                tfA_pow_trl = squeeze(mean(tf_pow_full(8:12,:,savetimeidx(1):savetimeidx(end-1)),1));
+                tfA_pow_tavg = (squeeze(mean(tfA_pow_trl,2)));
+                    %base
+                tfA_pow_bse = squeeze(mean(tf_pow_full(8:12,:,basetimeidx(1):basetimeidx(2)),1));
+                tfA_pow_bavg = (squeeze(mean(tfA_pow_bse,2)));
+                end %alpha switch
+                 if beta==1
+                    %beta [Bb low BB high B full]
+                tfbB_pow_all = 10*log10(squeeze(mean(tf_pow_full(12:22,:,:),1)));
+                tfbB_pow_avg = (squeeze(mean(tfbB_pow_all,2)));
+                tfBB_pow_all = 10*log10(squeeze(mean(tf_pow_full(23:35,:,:),1)));
+                tfBB_pow_avg = (squeeze(mean(tfBB_pow_all,2)));
+                tfB_pow_all = 10*log10(squeeze(mean(tf_pow_full(12:30,:,:),1)));
+                tfB_pow_avg = (squeeze(mean(tfB_pow_all,2)));
+                    %trial
+                tfbB_pow_trl = squeeze(mean(tf_pow_full(12:22,:,savetimeidx(1):savetimeidx(end-1)),1));
+                tfbB_pow_tavg = (squeeze(mean(tfbB_pow_trl,2)));
+                tfBB_pow_trl = squeeze(mean(tf_pow_full(23:35,:,savetimeidx(1):savetimeidx(end-1)),1));
+                tfBB_pow_tavg = (squeeze(mean(tfBB_pow_trl,2)));
+                tfB_pow_trl = squeeze(mean(tf_pow_full(12:30,:,savetimeidx(1):savetimeidx(end-1)),1));
+                tfB_pow_tavg = (squeeze(mean(tfB_pow_trl,2)));
+                    %base
+                tfbB_pow_bse = squeeze(mean(tf_pow_full(12:22,:,basetimeidx(1):basetimeidx(2)),1));
+                tfbB_pow_bavg = (squeeze(mean(tfbB_pow_bse,2)));
+                tfBB_pow_bse = squeeze(mean(tf_pow_full(23:35,:,basetimeidx(1):basetimeidx(2)),1));
+                tfBB_pow_bavg = (squeeze(mean(tfBB_pow_bse,2)));
+                tfB_pow_bse = squeeze(mean(tf_pow_full(12:30,:,basetimeidx(1):basetimeidx(2)),1));
+                tfB_pow_bavg = (squeeze(mean(tfB_pow_bse,2)));
+                 end %beta switch
+                 if gamma ==1
+                    %gamma [Gg low GG high G full]
+                    tfGg_pow_all = 10*log10(squeeze(mean(tf_pow_full(30:59,:,:),1)));
+                    tfGg_pow_avg = (squeeze(mean(tfGg_pow_all,2)));
+                    tfGG_pow_all = 10*log10(squeeze(mean(tf_pow_full(61:85,:,:),1)));
+                    tfGG_pow_avg = (squeeze(mean(tfGG_pow_all,2)));
+%                    tfG_pow_all = 10*log10(squeeze(mean(tf_pow_full(70:400,:,:),1)));%                 
+%                    tfG_pow_avg = (squeeze(mean(tfG_pow_all,2)));
+%                    tfG_pow_avg = (squeeze(mean(tfG_pow_all,2)));
+                    %trial
+%                     tfG_pow_trl = squeeze(mean(tf_pow_full(70:400,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                     tfG_pow_tavg = (squeeze(mean(tfG_pow_trl,2)));
+                    tfGg_pow_trl = squeeze(mean(tf_pow_full(30:59,:,savetimeidx(1):savetimeidx(end-1)),1));
+                    tfGg_pow_tavg = (squeeze(mean(tfGg_pow_trl,2)));
+                    tfGG_pow_trl = squeeze(mean(tf_pow_full(61:85,:,savetimeidx(1):savetimeidx(end-1)),1));
+                    tfGG_pow_tavg = (squeeze(mean(tfGG_pow_trl,2)));
+%                     tfG_pow_trl = squeeze(mean(tf_pow_full(55:85,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                     tfG_pow_tavg = (squeeze(mean(tfG_pow_trl,2)));
+                     %base
+%                     tfG_pow_bse = squeeze(mean(tf_pow_full(55:85,:,basetimeidx(1):basetimeidx(2)),1));
+%                     tfG_pow_bavg = (squeeze(mean(tfG_pow_bse,2)));
+%                     tfG_pow_bse = squeeze(mean(tf_pow_full(70:400,:,basetimeidx(1):basetimeidx(2)),1));
+%                     tfG_pow_bavg = (squeeze(mean(tfG_pow_bse,2)));
+                    tfGg_pow_bse = squeeze(mean(tf_pow_full(30:59,:,basetimeidx(1):basetimeidx(2)),1));
+                    tfGg_pow_bavg = (squeeze(mean(tfGg_pow_bse,2)));
+                    tfGG_pow_bse = squeeze(mean(tf_pow_full(61:85,:,basetimeidx(1):basetimeidx(2)),1));
+                    tfGG_pow_bavg = (squeeze(mean(tfGG_pow_bse,2)));
+                 end %gamma switch
+                if fullFreq ==1
+                    %fullband
+                    tfF_pow_all = 10*log10(squeeze(mean(tf_pow_full(4:40,:,:),1)));
+                    tfF_pow_avg = (squeeze(mean(tfF_pow_all,1)));
+                    %trial
+
+                    tfF_pow_trl = squeeze(mean(tf_pow_full(4:40,:,savetimeidx(1):savetimeidx(end-1)),1));
+                    tfF_pow_tavg = (squeeze(mean(tfF_pow_trl,1)));
+                    %base
+                    tfF_pow_bse = squeeze(mean(tf_pow_full(4:40,:,basetimeidx(1):basetimeidx(2)),1));
+                    tfF_pow_bavg = (squeeze(mean(tfF_pow_bse,1)));
+                end %full band switch
+                
+%                 tfU_pow_trl = squeeze(mean(tf_pow_full(4:7,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfU_pow_tavg = (squeeze(mean(tfU_pow_trl,2)));
+%                 tfA_pow_trl = squeeze(mean(tf_pow_full(8:12,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfA_pow_tavg = (squeeze(mean(tfA_pow_trl,2)));
+%                 tfBb_pow_trl = squeeze(mean(tf_pow_full(12:22,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfBb_pow_tavg = (squeeze(mean(tfBb_pow_trl,2)));
+%                 tfBB_pow_trl = squeeze(mean(tf_pow_full(23:35,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfBB_pow_tavg = (squeeze(mean(tfBB_pow_trl,2)));
+%                 tfB_pow_trl = squeeze(mean(tf_pow_full(12:30,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfB_pow_tavg = (squeeze(mean(tfB_pow_trl,2)));
+%                 tfG_pow_trl = squeeze(mean(tf_pow_full(70:400,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfG_pow_tavg = (squeeze(mean(tfG_pow_trl,2)));
+%                 tfGg_pow_trl = squeeze(mean(tf_pow_full(30:59,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfGg_pow_tavg = (squeeze(mean(tfGg_pow_trl,2)));
+%                 tfGG_pow_trl = squeeze(mean(tf_pow_full(61:150,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfGG_pow_tavg = (squeeze(mean(tfGG_pow_trl,2)));
+%                 tfG_pow_trl = squeeze(mean(tf_pow_full(55:85,:,savetimeidx(1):savetimeidx(end-1)),1));
+%                 tfG_pow_tavg = (squeeze(mean(tfG_pow_trl,2)));
+%                 tfF_pow_trl = squeeze(mean(tf_pow_full(:,:,savetimeidx(1):savetimeidx(end-1)),2));
+%                 tfF_pow_tavg = (squeeze(mean(tfF_pow_trl,1)));
+               
+% pBands = ['Gg 30:59','GG 61:140'];
+                %pBands = ['U 4:7', 'A 8:12', 'b 12:22', 'bB 23:35', 'B 12:30' ];%'G 70:400',, 'Fullband''Gg 30:59','GG 61:150'
+
+if exist('rt') == 0|| isempty(rt)
+    rt = nan;
+end
+
+                % store # # # # # # # # # # # # # # # # # # # # # # # # # # #
+                % individual
+                J(s).(cn{c}).subject = char(fn(fni(s)));
+                J(s).(cn{c}).signal = sig;
+                J(s).(cn{c}).RT = rt;
+                J(s).(cn{c}).alldat = alldata;
+                J(s).(cn{c}).dataX = dataX;
+                J(s).(cn{c}).as = full_analytic_signal;
+%                 J(s).(cn{c}).fullFreq = tf_pow_full;
+                J(s).(cn{c}).trlData = tData;
+                J(s).(cn{c}).bseData = bData;
+                
+                J(s).(cn{c}).tfU_pow_bse = tfU_pow_bse;
+                J(s).(cn{c}).tfA_pow_bse = tfA_pow_bse;
+                J(s).(cn{c}).tfbB_pow_bse = tfbB_pow_bse;
+                J(s).(cn{c}).tfBB_pow_bse = tfBB_pow_bse;
+                J(s).(cn{c}).tfB_pow_bse = tfB_pow_bse;
+%                 J(s).(cn{c}).tfGg_pow_bse = tfGg_pow_bse;
+%                 J(s).(cn{c}).tfGG_pow_bse = tfGG_pow_bse;
+%                 J(s).(cn{c}).tfG_pow_bse = tfG_pow_bse;
+               J(s).(cn{c}).tfF_pow_bse = tfF_pow_bse;
+
+                J(s).(cn{c}).tfU_pow_trl= tfU_pow_trl;
+                J(s).(cn{c}).tfA_pow_trl = tfA_pow_trl;
+                J(s).(cn{c}).tfbB_pow_trl=tfbB_pow_trl;
+                J(s).(cn{c}).tfBB_pow_trl = tfBB_pow_trl;
+                J(s).(cn{c}).tfB_pow_trl = tfB_pow_trl;
+%                 J(s).(cn{c}).tfGg_pow_trl = tfGg_pow_trl;
+%                 J(s).(cn{c}).tfGG_pow_trl = tfGG_pow_trl;
+%                 J(s).(cn{c}).tfG_pow_trl = tfG_pow_trl;
+                J(s).(cn{c}).tfF_pow_trl = tfF_pow_trl;
+
+                % group averages
+                if grpavg ==1
+                scat.(cn{c}).signal{s,:,:} = sig;
+                scat.(cn{c}).alldat{s,:,:} = alldata;
+                scat.(cn{c}).tf_pow_full{s,:,:} = tf_pow_full;
+                %scat.(cn{c}).dataX(s,:,:) = dataX;
+                 %scat.(cn{c}).as(s,:,:) = full_analytic_signal;
+
+                scat.(cn{c}).tfU_pow_bse{s,:,:} = tfU_pow_bse;
+                scat.(cn{c}).tfA_pow_bse{s,:,:} = tfA_pow_bse;
+                scat.(cn{c}).tfBb_pow_bse{s,:,:} = tfbB_pow_bse;
+                scat.(cn{c}).tfBB_pow_bse{s,:,:} = tfBB_pow_bse;
+                scat.(cn{c}).tfB_pow_bse{s,:,:} = tfB_pow_bse;
+%                 scat.(cn{c}).tfGg_pow_bse{s,:,:} = tfGg_pow_bse;
+%                 scat.(cn{c}).tfGG_pow_bse{s,:,:} = tfGG_pow_bse;
+%                 scat.(cn{c}).tfG_pow_bse{s,:,:} = tfG_pow_bse;
+%                 scat.(cn{c}).tfF_pow_bse{s,:,:} = tfF_pow_bse;
+
+                scat.(cn{c}).tfU_pow_trl{s,:,:} = tfU_pow_trl;
+                scat.(cn{c}).tfA_pow_trl{s,:,:} = tfA_pow_trl;
+                scat.(cn{c}).tfBb_pow_trl{s,:,:} = tfbB_pow_trl;
+                scat.(cn{c}).tfBB_pow_trl{s,:,:} = tfBB_pow_trl;
+                scat.(cn{c}).tfB_pow_trl{s,:,:} = tfB_pow_trl;
+%                 scat.(cn{c}).tfGg_pow_trl{s,:,:} = tfGg_pow_trl;
+%                 scat.(cn{c}).tfGG_pow_trl{s,:,:} = tfGG_pow_trl;
+%                 scat.(cn{c}).tfG_pow_trl{s,:,:} = tfG_pow_trl;
+%                 scat.(cn{c}).tfF_pow_trl{s,:,:} = tfF_pow_trl;
+
+               scat.(cn{c}).asBaseline(s,:,:) = baseline_analytic_signal;
+%                scat.(cn{c}).power(s,:,:,:) = full_pow;
+               scat.(cn{c}).powerBaseline(s,:,:) = baselinepow;
+%                scat.(cn{c}).tf_pow_trials(s,:,:,:) = tf_pow_trials;
+%                 scat.(cn{c}).tf_pow_baseline(s,:,:) = tf_pow_baseline;
+%                 scat.(cn{c}).tf_pow_mean(s,:,:) = tf_pow_mean;
+%                 scat.(cn{c}).tf_pow_db(s,:,:) = tf_pow_db;
+                end % grp switch
+                % ~ ~ ~ ~ ~ ~ ~
+                clear wavelet waveletX as full_analytic_signal full_pow bins_analytic_signal bins_pow baseline_analytic_signal baselinepow dataX as
+                clear tfU_pow_all tfU_pow_avg tfA_pow_all tfA_pow_avg tfBb_pow_all tfBb_pow_avg tfBB_pow_all tfBB_pow_avg  fU_pow_bse tfU_pow_bavg tfA_pow_bse tfA_pow_bavg tfBb_pow_bse tfBb_pow_bavg tfBB_pow_bse tfBB_pow_bavg tfU_pow_trl tfU_pow_tavg tfA_pow_trl tfA_pow_tavg tfBb_pow_trl tfBb_pow_tavg tfBB_pow_trl tfBB_pow_tavg z_tfA zA_tfavg z_tfBb zBb_tfavg z_tfBB zBB_tfavg
+                clear tfF_pow_trl tfF_pow_bse tfF_pow_all tfF_pow_avg
+
+                clear sig alldata  dataX full_analytic_signal tf_pow_full tfU_pow_bse tfA_pow_bse tfBb_pow_bse tfBB_pow_bse tfB_pow_bse tfG_pow_bse tfF_pow_bse
+                clear tfU_pow_trl tfA_pow_trl  tfBb_pow_trl tfBB_pow_trl tfB_pow_trl tfGg_pow_trl tfGG_pow_trl tfG_pow_trl tfF_pow_trl
+                clear sig alldata tf_pow_full tfU_pow_bse tfA_pow_bse tfBb_pow_bse tfBB_pow_bse  tfGg_pow_bse  tfGG_pow_bse  tfG_pow_bse
+                clear tfB_pow_bse tfG_pow_bse tfF_pow_bse tfU_pow_trl tfA_pow_trl tfBb_pow_trl tfBB_pow_trl tfB_pow_trl tfG_pow_trl tfF_pow_trl
+                clear ridx rt lenRM rmx
+            %end % qualifier for data (if nan eliminated due to lack of baseline data)
+        end %c
+    end %s
+end %k    
+% extract baseline beta per subject output power tables to directory and
+% navigate back to computing directory
+%cdir = 'C:\Users\jmcdonnell\Box\Dept-Neurosurgery_NRGlab\pipelines\stnLFP';
+% table directory = C:\Users\jmcdonnell\Box\Dept-Neurosurgery_NRGlab\Data\DBS\spike_processingSimon\STNoutput\PPd\LFP\STN_02_18\betaBaseline
+toc
+holdJ = J;
+
+% contains switches to do a variety of averages (weighted, not, average of average) across psudo subject
+ [J] = fx_fullFreqFilter_zscore(J);
+ if dosave ==1
+     output = 'C:\Users\j0mcdo06\Box\Dept-Neurosurgery_NRGlab\Data\DBS\spike_processingSimon\STNoutput\PPd\LFP\sorted\hem\conditions\fFreq\znorm';
+     disp(output) %'C:\Users\j0mcdo06\Box\Dept-Neurosurgery_NRGlab\Data\DBS\spike_processingSimon\STNoutput\lfp\freq'
+     save(fullfile(output, 'J.mat'), 'J', '-v7.3');
+     save(fullfile(output, 'holdJ.mat'), 'holdJ', '-v7.3');
+ end
+ 
+% plot output $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $ $
+ [J Gzs] = fx_figure_vimLFP_zscored(J, cdir);
+ [J Gdb] = fx_figure_stnLFP_dBnormed(J, cdir);
+ 
+[zsB,zsT,zbsPow,zTrPow] = fx_zpowerOutput_VIM(J,cdir);
+[dbB, dbT, zBsPow, DbTrPow] = fx_DBpowerOutput(J,cdir);
+
+toc
+%%
+if ~exist(output, 'dir')
+    mkdir(output)
+end
+
+if dosave == 1
+     disp(output) 
+    save(fullfile(output, 'J.mat'), 'J', '-v7.3');
+    save(fullfile(output, 'scat.mat'), 'scat', '-v7.3');
+end
+
